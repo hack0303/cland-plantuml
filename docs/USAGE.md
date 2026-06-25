@@ -64,6 +64,8 @@ cland-plantuml
 |--------|-------------|---------|
 | `--[no-]package-diagram` | Generate package dependency diagram | `true` |
 | `--hide-relationships` | Hide extends/implements/dependency arrows | shown by default |
+| `--sequence` | Generate sequence diagram from method call traces | off |
+| `--seq-focus <pkg>` | Focus sequence diagram on specific package prefix (repeatable, comma-separated) | all packages |
 
 ### Information
 
@@ -98,6 +100,20 @@ The package diagram shows:
 
 - **Package boxes** for all packages containing scanned types
 - **Dependency arrows** — package → package based on import statements
+
+### Sequence Diagram (`sequence-diagram.puml`)
+
+The sequence diagram shows static method call flow between types:
+
+- **Root entry points** identified as methods that call others but are never called by any known type (`main()` gets priority)
+- **Call arrows** with source line numbers — `caller -> callee: method(args)`
+- **Self-calls** (same-type internal method calls) shown as looping arrows
+- **Nested group blocks** for call chains — e.g. `invoke() → wrapResult() → builder()`
+- **Auto-numbered steps** via PlantUML's `autonumber`
+- **Focus filtering** with `--seq-focus` to zoom into specific packages
+- **Arguments** shown inline (truncated at 80 chars)
+
+> **Note:** This is a **static** call graph, not a runtime trace. Calls through interface dispatch are unresolved. Return flow is not shown.
 
 ## CLI Examples
 
@@ -146,6 +162,26 @@ cland-plantuml ./src \
   -v
 ```
 
+### Sequence diagram
+
+```bash
+# Generate sequence diagram from method call traces
+cland-plantuml ./src --sequence
+
+# Focus on a specific package (hide unrelated flows)
+cland-plantuml ./src --sequence --seq-focus "com.myapp.service"
+
+# Focus on multiple packages
+cland-plantuml ./src --sequence --seq-focus "com.myapp.service,com.myapp.controller"
+
+# Full: sequence + focus + render
+cland-plantuml /path/to/src \
+  --sequence \
+  --seq-focus "com.myapp.engine" \
+  --render \
+  -v
+```
+
 ### Scan from a Gradle dev environment
 
 ```bash
@@ -165,6 +201,8 @@ cland-plantuml ./src \
 | `class-diagram.png` | Rendered class diagram (if `--render`) | PlantUML + Graphviz dot |
 | `package-diagram.puml` | PlantUML package dependency diagram text | `PumlGenerator` |
 | `package-diagram.png` | Rendered package diagram (if `--render`) | PlantUML + Graphviz dot |
+| `sequence-diagram.puml` | PlantUML sequence diagram text (if `--sequence`) | `PumlGenerator` |
+| `sequence-diagram.png` | Rendered sequence diagram (if `--sequence --render`) | PlantUML + Graphviz dot |
 
 ### Data Pipeline
 

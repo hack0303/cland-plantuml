@@ -105,17 +105,26 @@ public class TypeModel {
 
 		/** A recorded method call (for sequence diagrams). */
 		public static class MethodCall {
-				public final String callerType; // fully qualified caller
+				public final String callerType;
 				public final String callerMethod;
-				public final String targetType; // fully qualified target (or simple name if unresolved)
+				public final String targetType;
 				public final String targetMethod;
+				public final String arguments; // stringified call arguments, e.g. "toolName, params"
+				public final int lineNumber;
 
 				public MethodCall(
-								String callerType, String callerMethod, String targetType, String targetMethod) {
+								String callerType,
+								String callerMethod,
+								String targetType,
+								String targetMethod,
+								String arguments,
+								int lineNumber) {
 						this.callerType = callerType;
 						this.callerMethod = callerMethod;
 						this.targetType = targetType;
 						this.targetMethod = targetMethod;
+						this.arguments = arguments;
+						this.lineNumber = lineNumber;
 				}
 		}
 

@@ -342,12 +342,18 @@ public class JavaSourceScanner {
 																										String targetType =
 																														resolveCallTarget(
 																																		callExpr, importMap, pkg);
+																										String args =
+																														callExpr.getArguments().toString();
 																										type.methodCalls.add(
 																														new TypeModel.MethodCall(
 																																		qualified,
 																																		mName,
 																																		targetType,
-																																		calledMethod));
+																																		calledMethod,
+																																		args,
+																																		callExpr.getBegin()
+																																						.map(r -> r.line)
+																																						.orElse(0)));
 																								});
 														});
 				}

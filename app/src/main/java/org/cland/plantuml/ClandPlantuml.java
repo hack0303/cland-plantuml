@@ -84,6 +84,12 @@ public class ClandPlantuml implements Callable<Integer> {
 						description = "Generate sequence diagram from method call traces")
 		private boolean sequenceDiagram = false;
 
+		@Option(
+						names = {"--seq-focus"},
+						description = "Only show sequence calls involving this package prefix (can repeat)",
+						split = ",")
+		private List<String> seqFocus = List.of();
+
 		private boolean relationships() {
 				return !hideRelationships;
 		}
@@ -145,7 +151,7 @@ public class ClandPlantuml implements Callable<Integer> {
 
 				// Generate sequence diagram
 				if (sequenceDiagram) {
-						String seqDiagram = generator.generateSequenceDiagram(result);
+						String seqDiagram = generator.generateSequenceDiagram(result, seqFocus);
 						Path seqPuml = outputDir.resolve("sequence-diagram.puml");
 						Files.writeString(seqPuml, seqDiagram);
 						System.out.println("Generated: " + seqPuml);
