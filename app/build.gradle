@@ -28,6 +28,9 @@ dependencies {
     // PlantUML for rendering .puml → PNG
     implementation 'net.sourceforge.plantuml:plantuml-gplv2:1.2025.0'
 
+    // Java AST parsing
+    implementation 'com.github.javaparser:javaparser-core:3.26.2'
+
     // Logging
     implementation 'org.slf4j:slf4j-api:2.0.16'
     implementation 'ch.qos.logback:logback-classic:1.5.21'

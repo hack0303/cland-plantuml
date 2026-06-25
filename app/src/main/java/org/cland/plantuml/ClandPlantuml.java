@@ -75,6 +75,20 @@ public class ClandPlantuml implements Callable<Integer> {
 		private boolean packageDiagram = true;
 
 		@Option(
+						names = {"--hide-relationships"},
+						description = "Hide extends/implements/dependency arrows (default: shown)")
+		private boolean hideRelationships = false;
+
+		@Option(
+						names = {"--sequence"},
+						description = "Generate sequence diagram from method call traces")
+		private boolean sequenceDiagram = false;
+
+		private boolean relationships() {
+				return !hideRelationships;
+		}
+
+		@Option(
 						names = {"-v", "--verbose"},
 						description = "Verbose output")
 		private boolean verbose = false;
@@ -115,7 +129,7 @@ public class ClandPlantuml implements Callable<Integer> {
 				}
 
 				// Generate class diagram
-				PumlGenerator generator = new PumlGenerator(hideJavaLang, onlyPublic);
+				PumlGenerator generator = new PumlGenerator(hideJavaLang, onlyPublic, relationships());
 				String classDiagram = generator.generateClassDiagram(result);
 				Path classPuml = outputDir.resolve("class-diagram.puml");
 				Files.writeString(classPuml, classDiagram);
@@ -127,6 +141,14 @@ public class ClandPlantuml implements Callable<Integer> {
 						Path pkgPuml = outputDir.resolve("package-diagram.puml");
 						Files.writeString(pkgPuml, pkgDiagram);
 						System.out.println("Generated: " + pkgPuml);
+				}
+
+				// Generate sequence diagram
+				if (sequenceDiagram) {
+						String seqDiagram = generator.generateSequenceDiagram(result);
+						Path seqPuml = outputDir.resolve("sequence-diagram.puml");
+						Files.writeString(seqPuml, seqDiagram);
+						System.out.println("Generated: " + seqPuml);
 				}
 
 				// Render to PNG
@@ -146,6 +168,16 @@ public class ClandPlantuml implements Callable<Integer> {
 										System.out.println("Rendered:  " + png);
 								} catch (Exception e) {
 										System.err.println("Error rendering package diagram: " + e.getMessage());
+								}
+						}
+
+						if (sequenceDiagram) {
+								try {
+										Path seqPuml = outputDir.resolve("sequence-diagram.puml");
+										Path png = renderer.render(seqPuml);
+										System.out.println("Rendered:  " + png);
+								} catch (Exception e) {
+										System.err.println("Error rendering sequence diagram: " + e.getMessage());
 								}
 						}
 				}

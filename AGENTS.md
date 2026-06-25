@@ -15,9 +15,9 @@
 | File | Purpose |
 |------|---------|
 | `ClandPlantuml.java` | CLI entry point (picocli), orchestrates scanning → generation → rendering |
-| `JavaSourceScanner.java` | Scans Java source files, parses types, fields, methods, and package dependencies |
-| `TypeModel.java` | Data model: `TypeModel` (name, package, kind, visibility) and `Member` (fields/methods) |
-| `PumlGenerator.java` | Generates PlantUML `.puml` text — class diagrams and package dependency diagrams |
+| `JavaSourceScanner.java` | Scans Java source files using **JavaParser AST**, extracts types, fields, methods, relationships and package dependencies |
+| `TypeModel.java` | Data model: `TypeModel` (name, package, kind, visibility, extends, implements, type params) and `Member` (fields/methods) |
+| `PumlGenerator.java` | Generates PlantUML `.puml` text — class diagrams (with relationship arrows) and package dependency diagrams |
 | `PngRenderer.java` | Renders `.puml` files to PNG using PlantUML's `SourceStringReader` |
 
 ## General Guidance
@@ -82,6 +82,8 @@ Options:
       --only-public               Only show public members (default: true)
       --package-diagram           Generate package dependency diagram
                                     (default: true)
+      --hide-relationships        Hide extends/implements/dependency arrows
+                                    (default: false — arrows shown)
   -v, --verbose                   Verbose output
       --version                   Print version information and exit
   -h, --help                      Show this help message and exit

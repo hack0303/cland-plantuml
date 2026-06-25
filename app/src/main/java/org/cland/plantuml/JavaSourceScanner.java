@@ -3,79 +3,40 @@
  */
 package org.cland.plantuml;
 
+import com.github.javaparser.ParserConfiguration;
+import com.github.javaparser.StaticJavaParser;
+import com.github.javaparser.ast.CompilationUnit;
+import com.github.javaparser.ast.body.*;
+import com.github.javaparser.ast.expr.Expression;
+import com.github.javaparser.ast.expr.MethodCallExpr;
+import com.github.javaparser.ast.expr.NameExpr;
+import com.github.javaparser.ast.type.Type;
+
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.*;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
+import com.github.javaparser.ParserConfiguration;
+import com.github.javaparser.StaticJavaParser;
+import com.github.javaparser.ast.CompilationUnit;
+import com.github.javaparser.ast.body.*;
+import com.github.javaparser.ast.expr.Expression;
+import com.github.javaparser.ast.expr.MethodCallExpr;
+import com.github.javaparser.ast.expr.NameExpr;
+import com.github.javaparser.ast.type.Type;
+
 /**
- * Scans Java source files and extracts type metadata (classes, interfaces, fields, methods).
- * Supports filtering via includes/excludes glob patterns.
+ * Scans Java source files using JavaParser AST and extracts type metadata (classes, interfaces,
+ * fields, methods, relationships).
+ *
+ * <p>Supports filtering via includes/excludes glob patterns. Package dependencies are extracted
+ * from import statements.
  */
 public class JavaSourceScanner {
-
-		// Pattern for package declaration
-		private static final Pattern PACKAGE_PATTERN = Pattern.compile("\\bpackage\\s+([\\w.]+)\\s*;");
-
-		// Pattern for import statements
-		private static final Pattern IMPORT_PATTERN =
-						Pattern.compile("\\bimport\\s+(?:static\\s+)?([\\w.*]+)\\s*;");
-
-		// Pattern for type declarations (class/interface/enum/record/@interface)
-		private static final Pattern TYPE_PATTERN =
-						Pattern.compile(
-										"(?m)^\\s*(?:(public|private|protected)\\s+)?"
-														+ "(?:abstract\\s+|final\\s+|sealed\\s+)?(?:static\\s+)?"
-														+ "(?:class|interface|enum|@interface|record)\\s+(\\w+)");
-
-		// Pattern for field declarations
-		private static final Pattern FIELD_PATTERN =
-						Pattern.compile(
-										"(?m)^\\s*(?:(public|private|protected)\\s+)?"
-														+ "(?:static\\s+|final\\s+|transient\\s+|volatile\\s+)*"
-														+ "(\\S+(?:\\s*<[^>]*>)?(?:\\[\\])?)\\s+(\\w+)\\s*(?:=|;)");
-
-		// Pattern for method declarations
-		private static final Pattern METHOD_PATTERN =
-						Pattern.compile(
-										"(?m)^\\s*(?:(public|private|protected)\\s+)?"
-														+ "(?:abstract\\s+|static\\s+|final\\s+|synchronized\\s+|native\\s+|default\\s+)*"
-														+ "(\\S+(?:\\s*<[^>]*>)?(?:\\[\\])?)\\s+(\\w+)\\s*\\(");
-
-		// Keywords that should never be treated as field types or method returns
-		private static final Set<String> KEYWORDS =
-						Set.of(
-										"return",
-										"if",
-										"else",
-										"for",
-										"while",
-										"switch",
-										"case",
-										"throw",
-										"new",
-										"this",
-										"super",
-										"class",
-										"interface",
-										"enum",
-										"record",
-										"package",
-										"import",
-										"true",
-										"false",
-										"null",
-										"catch",
-										"try",
-										"finally",
-										"break",
-										"continue",
-										"do",
-										"assert");
 
 		private final List<Pattern> includePatterns;
 		private final List<Pattern> excludePatterns;
@@ -85,21 +46,28 @@ public class JavaSourceScanner {
 				this.includePatterns = compileGlobs(includes.isEmpty() ? List.of("**") : includes);
 				this.excludePatterns = compileGlobs(excludes);
 				this.sourceDirs = sourceDirs;
+
+				// Configure JavaParser for latest Java features (records, sealed, pattern matching)
+				ParserConfiguration config = new ParserConfiguration();
+				// Set to the highest supported language level
+				config.setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_21);
+				StaticJavaParser.setConfiguration(config);
 		}
 
 		/** Scans all Java source files and returns parsed type models and package dependencies. */
 		public ScanResult scan() throws IOException {
+				// Use LinkedHashMap to preserve insertion order
 				Map<String, TypeModel> types = new LinkedHashMap<>();
 				Map<String, Set<String>> packageDeps = new HashMap<>();
+				// Track which packages have been seen (for filtering)
+				Set<String> seenPackages = new HashSet<>();
 
 				List<Path> javaFiles = collectJavaFiles();
 				for (Path file : javaFiles) {
-						parseFile(file, types, packageDeps);
+						parseFile(file, types, packageDeps, seenPackages);
 				}
 
-				// Apply filters
 				Map<String, TypeModel> filtered = filterTypes(types);
-
 				return new ScanResult(filtered, packageDeps);
 		}
 
@@ -124,155 +92,402 @@ public class JavaSourceScanner {
 				return files;
 		}
 
-		// ── Source parsing ──
+		// ── AST parsing ──
 
 		private void parseFile(
-						Path file, Map<String, TypeModel> types, Map<String, Set<String>> packageDeps)
+						Path file,
+						Map<String, TypeModel> types,
+						Map<String, Set<String>> packageDeps,
+						Set<String> seenPackages)
 						throws IOException {
+
 				String content = Files.readString(file, StandardCharsets.UTF_8);
 
-				// Extract package
-				Matcher pkgMatcher = PACKAGE_PATTERN.matcher(content);
-				if (!pkgMatcher.find()) return;
-				String pkg = pkgMatcher.group(1);
+				// Skip module-info.java — not a type declaration
+				if (file.getFileName().toString().equals("module-info.java")) return;
 
-				// Extract imports for package dependencies
-				Matcher impMatcher = IMPORT_PATTERN.matcher(content);
-				while (impMatcher.find()) {
-						String imp = impMatcher.group(1);
-						int dot = imp.lastIndexOf('.');
-						if (dot > 0) {
-								String impPkg = imp.substring(0, dot);
-								if (!impPkg.equals(pkg)
-												&& !impPkg.startsWith("java.")
-												&& !impPkg.startsWith("javax.")) {
-										packageDeps.computeIfAbsent(pkg, k -> new HashSet<>()).add(impPkg);
+				CompilationUnit cu;
+				try {
+						cu = StaticJavaParser.parse(content);
+				} catch (Exception e) {
+						// If JavaParser fails, skip the file (malformed source)
+						System.err.println("Warning: Failed to parse " + file + ": " + e.getMessage());
+						return;
+				}
+
+				// Extract package name
+				String pkg = cu.getPackageDeclaration().map(pd -> pd.getNameAsString()).orElse("");
+
+				seenPackages.add(pkg);
+
+				// Build import map: simple name → fully qualified name
+				// e.g. "List" → "java.util.List", "AliceFacade" → "org.cland.alice.agent.spi.AliceFacade"
+				Map<String, String> importMap = buildImportMap(cu, pkg);
+
+				// Extract package dependencies from imports (same logic as before)
+				cu.getImports()
+								.forEach(
+												imp -> {
+														String impName = imp.getNameAsString();
+														int dot = impName.lastIndexOf('.');
+														if (dot > 0) {
+																String impPkg = impName.substring(0, dot);
+																if (!impPkg.equals(pkg)
+																				&& !impPkg.startsWith("java.")
+																				&& !impPkg.startsWith("javax.")) {
+																		packageDeps
+																						.computeIfAbsent(pkg, k -> new HashSet<>())
+																						.add(impPkg);
+																}
+														}
+												});
+
+				// Visit all top-level type declarations
+				for (TypeDeclaration<?> typeDecl : cu.getTypes()) {
+						processTypeDeclaration(typeDecl, pkg, importMap, types, true);
+				}
+		}
+
+		/** Build a simple-name→qualified-name map from imports and same-package types. */
+		private Map<String, String> buildImportMap(CompilationUnit cu, String pkg) {
+				Map<String, String> map = new HashMap<>();
+				// Same-package types are implicitly resolvable
+				// (will be resolved during relationship phase — for now, return simple name)
+				cu.getImports()
+								.forEach(
+												imp -> {
+														String full = imp.getNameAsString();
+														String simple = full.substring(full.lastIndexOf('.') + 1);
+														// Only add if not a wildcard import
+														if (!imp.isAsterisk()) {
+																map.put(simple, full);
+														}
+												});
+				// java.lang types are implicitly imported
+				map.put("String", "java.lang.String");
+				map.put("Object", "java.lang.Object");
+				map.put("Integer", "java.lang.Integer");
+				map.put("Long", "java.lang.Long");
+				map.put("Double", "java.lang.Double");
+				map.put("Boolean", "java.lang.Boolean");
+				map.put("Void", "java.lang.Void");
+				return map;
+		}
+
+		/**
+		 * Process a type declaration and its inner types.
+		 *
+		 * @param addToGlobal if true, add this type to the global {@code types} map
+		 */
+		private TypeModel processTypeDeclaration(
+						TypeDeclaration<?> typeDecl,
+						String pkg,
+						Map<String, String> importMap,
+						Map<String, TypeModel> types,
+						boolean addToGlobal) {
+
+				// Determine kind
+				String kind;
+				if (typeDecl.isClassOrInterfaceDeclaration()) {
+						ClassOrInterfaceDeclaration coi = typeDecl.asClassOrInterfaceDeclaration();
+						kind = coi.isInterface() ? "interface" : "class";
+				} else if (typeDecl.isEnumDeclaration()) {
+						kind = "enum";
+				} else if (typeDecl.isAnnotationDeclaration()) {
+						kind = "annotation";
+				} else if (typeDecl.isRecordDeclaration()) {
+						kind = "record";
+				} else {
+						kind = "class";
+				}
+
+				String name = typeDecl.getNameAsString();
+				String qualified = pkg.isEmpty() ? name : pkg + "." + name;
+
+				// Skip if already seen
+				if (types.containsKey(qualified)) return types.get(qualified);
+
+				// Visibility
+				String visibility = getVisibility(typeDecl);
+
+				TypeModel type = new TypeModel(name, pkg, kind, visibility);
+
+				// ── Annotations ──
+				for (var ann : typeDecl.getAnnotations()) {
+						type.annotations.add("@" + ann.getNameAsString());
+				}
+
+				// ── Type parameters (generics) ──
+				if (typeDecl instanceof ClassOrInterfaceDeclaration coi) {
+						for (var tp : coi.getTypeParameters()) {
+								String tpStr = tp.getNameAsString();
+								if (tp.getTypeBound() != null && !tp.getTypeBound().isEmpty()) {
+										tpStr +=
+														" extends "
+																		+ tp.getTypeBound().stream()
+																						.map(b -> b.getNameAsString())
+																						.collect(Collectors.joining(" & "));
 								}
+								type.typeParameters.add(tpStr);
+						}
+				} else if (typeDecl instanceof RecordDeclaration rd) {
+						for (var tp : rd.getTypeParameters()) {
+								type.typeParameters.add(tp.getNameAsString());
 						}
 				}
 
-				// Clean content (remove comments, annotations, strings) for better pattern matching
-				String cleaned = cleanContent(content);
+				// ── Superclass ──
+				if (typeDecl instanceof ClassOrInterfaceDeclaration coi) {
+						coi.getExtendedTypes()
+										.forEach(
+														ext -> {
+																type.superClass = resolveTypeName(ext, importMap, pkg);
+														});
+						coi.getImplementedTypes()
+										.forEach(
+														imp -> {
+																String iface = resolveTypeName(imp, importMap, pkg);
+																type.interfaces.add(iface);
+																type.dependencies.add(iface);
+														});
+				} else if (typeDecl instanceof EnumDeclaration ed) {
+						// enums implicitly extend java.lang.Enum
+						type.superClass = "java.lang.Enum<" + qualified + ">";
+				} else if (typeDecl instanceof RecordDeclaration rd) {
+						rd.getImplementedTypes()
+										.forEach(
+														imp -> {
+																String iface = resolveTypeName(imp, importMap, pkg);
+																type.interfaces.add(iface);
+																type.dependencies.add(iface);
+														});
+				}
 
-				// Find type declarations
-				Matcher typeMatcher = TYPE_PATTERN.matcher(cleaned);
-				while (typeMatcher.find()) {
-						String vis = typeMatcher.group(1) != null ? typeMatcher.group(1) : "package";
-						String name = typeMatcher.group(2);
-						String matchText = typeMatcher.group(0);
+				// ── Permits (sealed classes) ──
+				if (typeDecl instanceof ClassOrInterfaceDeclaration coi) {
+						coi.getPermittedTypes()
+										.forEach(
+														perm -> {
+																type.permits.add(perm.getNameAsString());
+														});
+				}
 
-						String kind;
-						if (matchText.contains("interface")) {
-								kind = "interface";
-						} else if (matchText.contains("enum")) {
-								kind = "enum";
-						} else if (matchText.contains("@interface")) {
-								kind = "annotation";
-						} else if (matchText.contains("record")) {
-								kind = "record";
-						} else {
-								kind = "class";
+				// ── Enum constants ──
+				if (typeDecl instanceof EnumDeclaration ed) {
+						for (var constant : ed.getEntries()) {
+								type.enumConstants.add(constant.getNameAsString());
+						}
+				}
+
+				// ── Record components ──
+				if (typeDecl instanceof RecordDeclaration rd) {
+						for (var param : rd.getParameters()) {
+								String compType = param.getType().toString();
+								String compName = param.getNameAsString();
+								type.recordComponents.add(compName);
+								// Record components become constructor params, shown as fields
+								type.fields.add(new TypeModel.Member("public", compType, compName));
+								// Track dependency
+								resolveAndAddDependency(param.getType(), importMap, pkg, type);
+						}
+				}
+
+				// ── Fields ──
+				for (var field : typeDecl.getFields()) {
+						String fVis = getVisibility(field);
+						String fType = field.getCommonType().toString();
+						String resolvedFieldType = resolveTypeName(field.getCommonType(), importMap, pkg);
+						if (!resolvedFieldType.equals(fType)) {
+								type.dependencies.add(resolvedFieldType);
+						}
+						for (var variable : field.getVariables()) {
+								type.fields.add(new TypeModel.Member(fVis, fType, variable.getNameAsString()));
+						}
+				}
+
+				// ── Methods ──
+				for (var method : typeDecl.getMethods()) {
+						String mVis = getVisibility(method);
+						String mRet = method.getType().toString();
+						String mName = method.getNameAsString();
+
+						// Skip constructors (they have the same name as the type)
+						if (mName.equals(name)) continue;
+
+						type.methods.add(new TypeModel.Member(mVis, mRet, mName));
+
+						// Track return type dependency
+						String resolvedRet = resolveTypeName(method.getType(), importMap, pkg);
+						if (!resolvedRet.equals(mRet) && !resolvedRet.equals("void")) {
+								type.dependencies.add(resolvedRet);
 						}
 
-						String qualified = pkg + "." + name;
-						if (types.containsKey(qualified)) continue;
-
-						// Find type body
-						int afterName = typeMatcher.end();
-						if (afterName < cleaned.length() && cleaned.charAt(afterName) == '<') {
-								int gt = cleaned.indexOf('>', afterName);
-								if (gt > 0) afterName = gt + 1;
-						}
-
-						int brace = cleaned.indexOf('{', afterName);
-						if (brace < 0) continue;
-
-						int bodyEnd = findMatchingBrace(cleaned, brace);
-						String body = (bodyEnd > brace) ? cleaned.substring(brace + 1, bodyEnd).trim() : "";
-
-						TypeModel type = new TypeModel(name, pkg, kind, vis);
-
-						if (!body.isEmpty()) {
-								// Extract fields
-								Matcher fieldMatcher = FIELD_PATTERN.matcher(body);
-								while (fieldMatcher.find()) {
-										String fVis = fieldMatcher.group(1) != null ? fieldMatcher.group(1) : "package";
-										String fType = fieldMatcher.group(2);
-										String fName = fieldMatcher.group(3);
-										if (fType != null
-														&& fName != null
-														&& !KEYWORDS.contains(fType)
-														&& !fName.contains("(")
-														&& !fName.isEmpty()) {
-												type.fields.add(new TypeModel.Member(fVis, fType, fName));
-										}
+						// Track parameter type dependencies
+						for (var param : method.getParameters()) {
+								String resolvedParam = resolveTypeName(param.getType(), importMap, pkg);
+								if (!resolvedParam.equals(param.getType().toString())) {
+										type.dependencies.add(resolvedParam);
 								}
-
-								// Extract methods
-								Matcher methodMatcher = METHOD_PATTERN.matcher(body);
-								while (methodMatcher.find()) {
-										String mVis =
-														methodMatcher.group(1) != null ? methodMatcher.group(1) : "package";
-										String mRet = methodMatcher.group(2);
-										String mName = methodMatcher.group(3);
-										if (mRet != null
-														&& mName != null
-														&& !mName.equals(name) // skip constructors
-														&& !KEYWORDS.contains(mName)
-														&& mName.length() > 1) {
-												type.methods.add(new TypeModel.Member(mVis, mRet, mName));
-										}
-								}
 						}
 
+						// ── Method call extraction (for sequence diagrams) ──
+						method.getBody()
+										.ifPresent(
+														body -> {
+																body.findAll(MethodCallExpr.class)
+																				.forEach(
+																								callExpr -> {
+																										String calledMethod =
+																														callExpr.getNameAsString();
+																										String targetType =
+																														resolveCallTarget(
+																																		callExpr, importMap, pkg);
+																										type.methodCalls.add(
+																														new TypeModel.MethodCall(
+																																		qualified,
+																																		mName,
+																																		targetType,
+																																		calledMethod));
+																								});
+														});
+				}
+
+				// ── Inner types (recursive) — NOT added to global types map ──
+				for (var inner : typeDecl.getMembers()) {
+						if (inner instanceof TypeDeclaration<?> innerDecl) {
+								TypeModel innerType =
+												processTypeDeclaration(innerDecl, pkg, importMap, types, false);
+								type.innerTypes.add(innerType);
+						}
+				}
+
+				// Also skip same-package standard types (like String[]) from dependency arrows
+				if (addToGlobal) {
 						types.put(qualified, type);
 				}
+				return type;
 		}
 
-		// ── Content cleaning ──
+		// ── Type name resolution ──
 
-		private String cleanContent(String content) {
-				// Remove block comments /* ... */
-				String cleaned = content.replaceAll("/\\*.*?\\*/", " ");
-				// Remove line comments // ...
-				cleaned = cleaned.replaceAll("//.*", "");
-				// Remove annotations @Foo(...)
-				cleaned = cleaned.replaceAll("@\\w+(?:\\([^)]*\\))?", "");
-				// Remove string literals
-				cleaned = cleaned.replaceAll("\"[^\"]*\"", "\"\"");
-				return cleaned;
-		}
+		/**
+		 * Resolve the target type of a method call expression for sequence diagrams. Returns a
+		 * best-effort fully qualified type name, or simple name if unresolved.
+		 */
+		private String resolveCallTarget(
+						MethodCallExpr call, Map<String, String> importMap, String pkg) {
+				// No scope → call on self (this)
+				if (!call.getScope().isPresent()) {
+						return "this";
+				}
+				Expression scope = call.getScope().get();
 
-		private int findMatchingBrace(String s, int openPos) {
-				int depth = 0;
-				for (int i = openPos; i < s.length(); i++) {
-						char c = s.charAt(i);
-						if (c == '{') {
-								depth++;
-						} else if (c == '}') {
-								depth--;
-								if (depth == 0) return i;
-						} else if (c == '"' || c == '\'') {
-								i = skipStringLiteral(s, i, c);
-						} else if (c == '/' && i + 1 < s.length()) {
-								if (s.charAt(i + 1) == '/') {
-										int nl = s.indexOf('\n', i);
-										i = nl < 0 ? s.length() - 1 : nl;
-								} else if (s.charAt(i + 1) == '*') {
-										int e = s.indexOf("*/", i + 2);
-										i = e < 0 ? s.length() - 1 : e + 1;
-								}
+				// NameExpr → variable/class name, try to resolve via import map
+				if (scope instanceof NameExpr nameExpr) {
+						String name = nameExpr.getNameAsString();
+						// Static method call on a class name?
+						String qualified = importMap.get(name);
+						if (qualified != null) {
+								return qualified;
+						}
+						// Logger, List, etc. — use simple name if not known
+						// Check if it's a known dependency from imports
+						if (Character.isUpperCase(name.charAt(0))) {
+								return name; // likely a class/type
+						}
+						return name; // likely a variable
+				}
+
+				// Other scopes (FieldAccessExpr, MethodCallExpr chaining, etc.)
+				String scopeStr = scope.toString();
+				if (scopeStr.contains(".")) {
+						String first = scopeStr.split("\\.")[0];
+						String resolved = importMap.get(first);
+						if (resolved != null) {
+								return resolved + "." + scopeStr.substring(first.length() + 1);
 						}
 				}
-				return s.length() - 1;
+
+				return scopeStr;
 		}
 
-		private int skipStringLiteral(String s, int pos, char quote) {
-				for (int i = pos + 1; i < s.length(); i++) {
-						if (s.charAt(i) == '\\') i++;
-						else if (s.charAt(i) == quote) return i;
+		/**
+		 * Resolve a type to its fully qualified name using the import map, or return the simple name if
+		 * unknown.
+		 */
+		private String resolveTypeName(Type type, Map<String, String> importMap, String pkg) {
+				String raw = type.toString();
+
+				// Strip generics and array brackets for resolution
+				String baseName = raw.replaceAll("<.*?>", "").replaceAll("\\[\\]", "").trim();
+				String arraySuffix = raw.endsWith("[]") ? "[]" : "";
+
+				// If already qualified, return as-is
+				if (baseName.contains(".")) return raw;
+
+				// Check import map
+				String qualified = importMap.get(baseName);
+				if (qualified != null) {
+						// Re-attach generics and array suffix if present
+						int gt = raw.indexOf('<');
+						if (gt >= 0) {
+								return qualified + raw.substring(gt);
+						}
+						return qualified + arraySuffix;
 				}
-				return s.length() - 1;
+
+				// Check if it's a primitive or void
+				switch (baseName) {
+						case "byte":
+						case "short":
+						case "int":
+						case "long":
+						case "float":
+						case "double":
+						case "boolean":
+						case "char":
+						case "void":
+								return baseName + arraySuffix;
+				}
+
+				// Same-package type, only if not empty
+				if (!pkg.isEmpty() && !baseName.isEmpty()) {
+						return pkg + "." + raw;
+				}
+
+				return raw;
+		}
+
+		private void resolveAndAddDependency(
+						Type type, Map<String, String> importMap, String pkg, TypeModel model) {
+				String resolved = resolveTypeName(type, importMap, pkg);
+				String raw = type.toString();
+				if (!resolved.equals(raw) && !resolved.equals("void")) {
+						model.dependencies.add(resolved);
+				}
+		}
+
+		// ── Visibility helper ──
+
+		private String getVisibility(TypeDeclaration<?> decl) {
+				if (decl.isPublic()) return "public";
+				if (decl.isPrivate()) return "private";
+				if (decl.isProtected()) return "protected";
+				return "package";
+		}
+
+		private String getVisibility(FieldDeclaration decl) {
+				if (decl.isPublic()) return "public";
+				if (decl.isPrivate()) return "private";
+				if (decl.isProtected()) return "protected";
+				return "package";
+		}
+
+		private String getVisibility(MethodDeclaration decl) {
+				if (decl.isPublic()) return "public";
+				if (decl.isPrivate()) return "private";
+				if (decl.isProtected()) return "protected";
+				return "package";
 		}
 
 		// ── Filtering ──

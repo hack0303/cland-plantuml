@@ -13,10 +13,16 @@ public class PumlGenerator {
 
 		private final boolean hideJavaLang;
 		private final boolean onlyPublic;
+		private final boolean showRelationships;
 
 		public PumlGenerator(boolean hideJavaLang, boolean onlyPublic) {
+				this(hideJavaLang, onlyPublic, true);
+		}
+
+		public PumlGenerator(boolean hideJavaLang, boolean onlyPublic, boolean showRelationships) {
 				this.hideJavaLang = hideJavaLang;
 				this.onlyPublic = onlyPublic;
+				this.showRelationships = showRelationships;
 		}
 
 		/** Generates a PlantUML class diagram. */
@@ -35,58 +41,144 @@ public class PumlGenerator {
 						sb.append("hide java.lang\n");
 				}
 
+				// ── Type boxes ──
 				for (TypeModel type : result.types.values()) {
-						String kind = type.kind.equals("record") ? "class" : type.kind;
-						sb.append(kind).append(" ").append(type.qualifiedName());
-						if (type.kind.equals("record")) {
-								sb.append(" <<record>>");
-						}
-						sb.append(" {\n");
+						emitTypeBox(sb, type);
+				}
 
-						// Fields
-						List<TypeModel.Member> fields =
-										onlyPublic
-														? type.fields.stream()
-																		.filter(m -> m.visibility.equals("public"))
-																		.collect(Collectors.toList())
-														: type.fields;
-						for (TypeModel.Member field : fields) {
-								sb.append("  ")
-												.append(visSymbol(field.visibility))
-												.append(" ")
-												.append(field.type)
-												.append(" ")
-												.append(field.name)
-												.append("\n");
+				// ── Relationship arrows ──
+				if (showRelationships) {
+						Set<String> emitted = new HashSet<>();
+						for (TypeModel type : result.types.values()) {
+								for (String arrow : type.relationshipArrows()) {
+										// Only emit arrows where the target type is known in the diagram
+										String target = parseArrowTarget(arrow);
+										if (target != null && !result.types.containsKey(target)) continue;
+										if (emitted.add(arrow)) {
+												sb.append(arrow).append("\n");
+										}
+								}
 						}
-
-						// Separator
-						if (!fields.isEmpty() && !type.methods.isEmpty()) {
-								sb.append("  ..\n");
-						}
-
-						// Methods
-						List<TypeModel.Member> methods =
-										onlyPublic
-														? type.methods.stream()
-																		.filter(m -> m.visibility.equals("public"))
-																		.collect(Collectors.toList())
-														: type.methods;
-						for (TypeModel.Member method : methods) {
-								sb.append("  ")
-												.append(visSymbol(method.visibility))
-												.append(" ")
-												.append(method.type)
-												.append(" ")
-												.append(method.name)
-												.append("()\n");
-						}
-
-						sb.append("}\n\n");
 				}
 
 				sb.append("@enduml\n");
 				return sb.toString();
+		}
+
+		private void emitTypeBox(StringBuilder sb, TypeModel type) {
+				// Kind prefix
+				String kind = type.plantUmlKind();
+				sb.append(kind).append(" ").append(type.qualifiedName());
+
+				// Type parameters
+				if (!type.typeParameters.isEmpty()) {
+						sb.append("<").append(String.join(", ", type.typeParameters)).append(">");
+				}
+
+				// Stereotypes
+				List<String> stereotypes = new ArrayList<>();
+				if (type.isRecord()) {
+						stereotypes.add("record");
+				}
+				if (type.kind.equals("annotation")) {
+						stereotypes.add("annotation");
+				}
+				for (String ann : type.annotations) {
+						stereotypes.add(ann);
+				}
+				if (!stereotypes.isEmpty()) {
+						sb.append(" <<").append(String.join(", ", stereotypes)).append(">>");
+				}
+
+				// Extends / implements in class header
+				String extendsClause = type.extendsClause();
+				String implementsClause = type.implementsClause();
+				if (!extendsClause.isEmpty() || !implementsClause.isEmpty()) {
+						sb.append(extendsClause).append(implementsClause);
+				}
+
+				sb.append(" {\n");
+
+				// Enum constants
+				if (!type.enumConstants.isEmpty()) {
+						for (String ec : type.enumConstants) {
+								sb.append("  ").append(ec).append("\n");
+						}
+						if (!type.fields.isEmpty() || !type.methods.isEmpty()) {
+								sb.append("  ..\n");
+						}
+				}
+
+				// Fields
+				List<TypeModel.Member> fields =
+								onlyPublic
+												? type.fields.stream()
+																.filter(m -> m.visibility.equals("public"))
+																.collect(Collectors.toList())
+												: type.fields;
+				for (TypeModel.Member field : fields) {
+						sb.append("  ")
+										.append(field.plantUmlSymbol())
+										.append(" ")
+										.append(field.type)
+										.append(" ")
+										.append(field.name)
+										.append("\n");
+				}
+
+				// Separator
+				if (!fields.isEmpty() && !type.methods.isEmpty()) {
+						sb.append("  ..\n");
+				}
+
+				// Methods
+				List<TypeModel.Member> methods =
+								onlyPublic
+												? type.methods.stream()
+																.filter(m -> m.visibility.equals("public"))
+																.collect(Collectors.toList())
+												: type.methods;
+				for (TypeModel.Member method : methods) {
+						sb.append("  ")
+										.append(method.plantUmlSymbol())
+										.append(" ")
+										.append(method.type)
+										.append(" ")
+										.append(method.name)
+										.append("()\n");
+				}
+
+				sb.append("}\n\n");
+
+				// Inner types
+				for (TypeModel inner : type.innerTypes) {
+						emitTypeBox(sb, inner);
+				}
+		}
+
+		/**
+		 * Parse the target type from a relationship arrow string. Arrows have the form: {@code Source
+		 * --> Target} or {@code Target <|-- Source}.
+		 *
+		 * @return the fully qualified target type name, or null if unparseable
+		 */
+		private static String parseArrowTarget(String arrow) {
+				// Pattern: "A --> B" → target is B
+				int arrowIdx = arrow.indexOf(" --> ");
+				if (arrowIdx >= 0) {
+						return arrow.substring(arrowIdx + 5).trim();
+				}
+				// Pattern: "B <|-- A" → target is B
+				int extIdx = arrow.indexOf(" <|-- ");
+				if (extIdx >= 0) {
+						return arrow.substring(0, extIdx).trim();
+				}
+				// Pattern: "B <|.. A" → target is B
+				int impIdx = arrow.indexOf(" <|.. ");
+				if (impIdx >= 0) {
+						return arrow.substring(0, impIdx).trim();
+				}
+				return null;
 		}
 
 		/** Generates a PlantUML package dependency diagram. */
@@ -121,16 +213,78 @@ public class PumlGenerator {
 				return sb.toString();
 		}
 
-		private static String visSymbol(String vis) {
-				switch (vis) {
-						case "public":
-								return "+";
-						case "private":
-								return "-";
-						case "protected":
-								return "#";
-						default:
-								return "~";
+		/** Generates a PlantUML sequence diagram from extracted method calls. */
+		public String generateSequenceDiagram(JavaSourceScanner.ScanResult result) {
+				StringBuilder sb = new StringBuilder();
+				sb.append("@startuml\n");
+				sb.append("' Generated by cland-plantuml - Sequence Diagram\n");
+				sb.append("' Note: calls to unresolved types (variables, external libs) are omitted\n\n");
+
+				// Build simple-name → qualified-name map from known types
+				Map<String, String> simpleNameMap = new HashMap<>();
+				for (String qn : result.types.keySet()) {
+						String simple = qn.contains(".") ? qn.substring(qn.lastIndexOf('.') + 1) : qn;
+						simpleNameMap.put(simple, qn);
 				}
+
+				// Resolve a target type string to a qualified name if possible
+				// Handles: simple names ("FacadeSelector"), partial names, qualified names
+				java.util.function.Function<String, String> resolveTarget =
+								target -> {
+										if (result.types.containsKey(target)) return target;
+										String qualified = simpleNameMap.get(target);
+										if (qualified != null) return qualified;
+										return null;
+								};
+
+				// Collect all participants and valid calls
+				Set<String> participants = new LinkedHashSet<>();
+				List<TypeModel.MethodCall> allCalls = new ArrayList<>();
+
+				for (TypeModel type : result.types.values()) {
+						for (TypeModel.MethodCall call : type.methodCalls) {
+								String from = call.callerType;
+								String to = resolveTarget.apply(call.targetType);
+								if (to == null) continue; // skip unresolved
+								if (!result.types.containsKey(from)) continue; // caller not in diagram
+
+								allCalls.add(call);
+								participants.add(from);
+								participants.add(to);
+						}
+				}
+
+				if (participants.isEmpty()) {
+						sb.append("' No method calls detected between known types\n");
+						sb.append("@enduml\n");
+						return sb.toString();
+				}
+
+				// Emit participant declarations
+				for (String p : participants) {
+						String label = p.contains(".") ? p.substring(p.lastIndexOf('.') + 1) : p;
+						sb.append("participant \"").append(label).append("\" as ").append(p).append("\n");
+				}
+				sb.append("\n");
+
+				// Emit call arrows
+				for (TypeModel.MethodCall call : allCalls) {
+						String from = call.callerType;
+						String to = resolveTarget.apply(call.targetType);
+						if (to == null) continue;
+
+						sb.append(from)
+										.append(" -> ")
+										.append(to)
+										.append(": ")
+										.append(call.callerMethod)
+										.append("() calls ")
+										.append(call.targetMethod)
+										.append("()")
+										.append("\n");
+				}
+
+				sb.append("@enduml\n");
+				return sb.toString();
 		}
 }
